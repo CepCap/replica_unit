@@ -1,0 +1,12 @@
+.env
+/models/
+
+# Rust build output
+/target/
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
