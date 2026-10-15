@@ -88,3 +88,7 @@ Errors identify their component: `[audio input]`, `[STT]`, `[local LLM]`, or `[T
 The assistant reads microphone audio continuously and uses its measured level to find speech starts and ends. It transcribes each segment after microphone audio remains below the silence threshold continuously for 1.8 seconds; there is no fixed read or transcription interval. The assistant uses the default microphone and system audio output. The local model is loaded and run by Ollama; it may respond more slowly on computers with limited memory or without a supported GPU.
 
 The `.gitignore` excludes the local `.env` configuration file and the root `models/` directory, so downloaded models and machine-specific settings are not included in Git.
+
+## Third-party software and model licenses
+
+Whisper.cpp, Ollama, Piper, and the downloaded speech and chat models are third-party projects and are installed or downloaded separately; their licenses do not come from this project. Check the license terms for the specific Ollama model you use and the `MODEL_CARD` for your Piper voice before using or redistributing them. Piper voices can have different terms from the Piper software itself. See the upstream [whisper.cpp](https://github.com/ggml-org/whisper.cpp), [Ollama](https://github.com/ollama/ollama), and [Piper](https://github.com/OHF-Voice/piper1-gpl) projects for their license information.
