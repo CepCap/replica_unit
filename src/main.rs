@@ -1,11 +1,13 @@
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde_json::json;
-use std::{env, fs, io::Write, path::{Path, PathBuf}, process::{Command, Stdio}, sync::mpsc, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{env, fs, io::Write, path::{Path, PathBuf}, process::{Command, Stdio}, sync::mpsc, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 
 const TARGET_RATE: u32 = 16_000;
 const FORCED_LANGUAGE: &str = "en";
 const WAKE_WORDS: &[&str] = &["example"];
+const DEBUG_MODE: bool = false;
+const DEBUG_SEGMENT_MS: usize = 5_000;
 const SILENCE_RMS_THRESHOLD: f32 = 0.012;
 const END_OF_UTTERANCE_SILENCE_MS: usize = 1_800;
 
@@ -81,6 +83,7 @@ fn main() -> Result<()> {
     let mut silent_samples = 0usize;
     let mut awaiting_command = false;
     let required_silence = cfg.sample_rate as usize * END_OF_UTTERANCE_SILENCE_MS / 1_000;
+    let debug_segment_samples = cfg.sample_rate as usize * DEBUG_SEGMENT_MS / 1_000;
     loop {
         let block = match audio_rx.recv() {
             Ok(AudioEvent::Samples(samples)) => samples,
@@ -107,10 +110,13 @@ fn main() -> Result<()> {
             silent_samples += mono.len();
         }
 
-        if silent_samples >= required_silence {
+        if silent_samples >= required_silence || (DEBUG_MODE && segment.len() >= debug_segment_samples) {
             speech_active = false;
             silent_samples = 0;
             let completed_segment = std::mem::take(&mut segment);
+            if DEBUG_MODE {
+                println!("Debug mode: ending microphone segment after 5 seconds.");
+            }
             process_segment(&cfg, &completed_segment, &mut awaiting_command)?;
         }
     }
@@ -132,7 +138,8 @@ fn process_segment(cfg: &Config, audio: &[f32], awaiting_command: &mut bool) -> 
 
     if *awaiting_command {
         *awaiting_command = false;
-        let request = strip_wake_words(&decoded);
+        // This segment was recorded after the wake phrase in the previous segment.
+        let request = decoded.trim().to_owned();
         if request.is_empty() {
             eprintln!("ERROR [STT]: No request was recognized after the wake phrase.");
             return Ok(());
@@ -174,38 +181,64 @@ fn send_request(cfg: &Config, text: &str) -> Result<()> {
 fn transcribe(cfg: &Config, audio: &[f32]) -> Result<String> {
     let wav = temp_path("input.wav");
     write_wav(&wav, audio, cfg.sample_rate, cfg.channels)?;
-    let output = Command::new(&cfg.whisper_bin).args(["-m", cfg.whisper_model.to_string_lossy().as_ref(), "-f", wav.to_string_lossy().as_ref(), "-l", FORCED_LANGUAGE, "-nt", "-np"]).output()
-        .with_context(|| format!("Unable to start '{}'. Install whisper.cpp and set WHISPER_BIN.", cfg.whisper_bin))?;
+    if DEBUG_MODE {
+        println!("DEBUG [STT]: Sending {:.2}s audio to Whisper (language: {FORCED_LANGUAGE}, model: {}).", audio.len() as f64 / cfg.sample_rate as f64, cfg.whisper_model.display());
+    }
+    let started = Instant::now();
+    let result = (|| {
+        let output = Command::new(&cfg.whisper_bin).args(["-m", cfg.whisper_model.to_string_lossy().as_ref(), "-f", wav.to_string_lossy().as_ref(), "-l", FORCED_LANGUAGE, "-nt", "-np"]).output()
+            .with_context(|| format!("Unable to start '{}'. Install whisper.cpp and set WHISPER_BIN.", cfg.whisper_bin))?;
+        if !output.status.success() { bail!("whisper.cpp failed: {}", String::from_utf8_lossy(&output.stderr).trim()); }
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if text.is_empty() { bail!("whisper.cpp returned empty transcription"); }
+        Ok(text)
+    })();
     let _ = fs::remove_file(&wav);
-    if !output.status.success() { bail!("whisper.cpp failed: {}", String::from_utf8_lossy(&output.stderr).trim()); }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if text.is_empty() { bail!("whisper.cpp returned empty transcription"); }
-    Ok(text)
+    if DEBUG_MODE {
+        match &result {
+            Ok(text) => println!("DEBUG [STT]: Whisper finished in {:.2}s; Whisper returned: {text}", started.elapsed().as_secs_f64()),
+            Err(error) => eprintln!("DEBUG [STT]: Whisper finished with an error after {:.2}s: {error:#}", started.elapsed().as_secs_f64()),
+        }
+    }
+    result
 }
 
 fn chat(cfg: &Config, prompt: &str) -> Result<String> {
-    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(300)).build()?;
-    let url = format!("{}/api/chat", cfg.ollama_url.trim_end_matches('/'));
-    let personality = "You are Replica Unit, a helpful voice assistant. Do not use asterisks in your response. Try to keep answers short, below 5 sentences";
-    let response = client.post(url)
-        .json(&json!({
-            "model": cfg.ollama_model,
-            "stream": false,
-            "think": false,
-            "messages": [
-                {"role":"system","content":personality},
-                {"role":"user","content":prompt}
-            ]
-        }))
-        .send()
-        .context("Could not connect to Ollama. Make sure Ollama is running locally.")?;
-    let status = response.status();
-    let body: serde_json::Value = response.json().context("Invalid response from Ollama")?;
-    if !status.is_success() {
-        bail!("Ollama returned {status}: {}", body["error"].as_str().unwrap_or("unknown local LLM error"));
+    if DEBUG_MODE {
+        println!("DEBUG [LLM]: Sending query to Ollama model '{}' ({} characters).", cfg.ollama_model, prompt.chars().count());
     }
-    body["message"]["content"].as_str().map(str::to_owned)
-        .ok_or_else(|| anyhow!("Ollama response did not contain assistant text"))
+    let started = Instant::now();
+    let result = (|| {
+        let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(300)).build()?;
+        let url = format!("{}/api/chat", cfg.ollama_url.trim_end_matches('/'));
+        let personality = "You are Replica Unit, a helpful voice assistant. Do not use asterisks in your response. Try to keep answers short, below 5 sentences";
+        let response = client.post(url)
+            .json(&json!({
+                "model": cfg.ollama_model,
+                "stream": false,
+                "think": false,
+                "messages": [
+                    {"role":"system","content":personality},
+                    {"role":"user","content":prompt}
+                ]
+            }))
+            .send()
+            .context("Could not connect to Ollama. Make sure Ollama is running locally.")?;
+        let status = response.status();
+        let body: serde_json::Value = response.json().context("Invalid response from Ollama")?;
+        if !status.is_success() {
+            bail!("Ollama returned {status}: {}", body["error"].as_str().unwrap_or("unknown local LLM error"));
+        }
+        body["message"]["content"].as_str().map(str::to_owned)
+            .ok_or_else(|| anyhow!("Ollama response did not contain assistant text"))
+    })();
+    if DEBUG_MODE {
+        match &result {
+            Ok(response) => println!("DEBUG [LLM]: Ollama finished in {:.2}s; response: {response}", started.elapsed().as_secs_f64()),
+            Err(error) => eprintln!("DEBUG [LLM]: Ollama finished with an error after {:.2}s: {error:#}", started.elapsed().as_secs_f64()),
+        }
+    }
+    result
 }
 
 fn speak(cfg: &Config, text: &str) -> Result<()> {
@@ -254,17 +287,19 @@ fn check_file(path: &Path, component: &str, label: &str) -> Result<()> {
 }
 
 fn strip_wake_words(text: &str) -> String {
-    let leading = text.trim_start();
-    let lower = leading.to_lowercase();
+    let lower = text.to_lowercase();
     for phrase in WAKE_WORDS {
-        if lower.starts_with(phrase) {
-            let end = phrase.len();
-            let tail = &leading[end..];
-            if tail.chars().next().map(|c| c.is_whitespace() || ",.!?—-:".contains(c)).unwrap_or(true) {
-                let cleaned = tail.trim().trim_start_matches(|c: char| ",.!?—-: ".contains(c)).trim().to_owned();
-                if !cleaned.is_empty() { return cleaned; }
+        let mut search_from = 0;
+        while let Some(start) = lower[search_from..].find(phrase) {
+            let start = search_from + start;
+            let end = start + phrase.len();
+            let before_ok = text[..start].chars().next_back().map(|c| !c.is_alphanumeric()).unwrap_or(true);
+            let after_ok = text[end..].chars().next().map(|c| !c.is_alphanumeric()).unwrap_or(true);
+            if before_ok && after_ok {
+                return text[end..].trim().trim_start_matches(|c: char| ",.!?—-: ".contains(c)).trim().to_owned();
             }
+            search_from = end;
         }
     }
-    text.to_owned()
+    String::new()
 }

@@ -64,6 +64,8 @@ Open `.env` and set the executable paths if `whisper-cli` and `piper` are not on
 
 Update these environment values to match your system: set the correct executable paths, model file paths, and Ollama URL and model. The application requires all six values. In `src/main.rs`, change the `WAKE_WORDS` constant to the phrases you want the assistant to recognize, and change `FORCED_LANGUAGE` to the Whisper language code that matches your needs.
 
+For debugging, set `DEBUG_MODE` to `true` in `src/main.rs` to cap each recorded speech segment at five seconds. Set it to `false` to record until the normal silence cutoff.
+
 Build and start the assistant:
 
 ```sh
