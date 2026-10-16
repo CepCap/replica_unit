@@ -1,6 +1,6 @@
 # Replica Unit (Rust)
 
-A vibe-coded, local, always-listening. It scans the microphone with Whisper, recognizes the wake phrases **“Replica Unit”**, **“Replica”**, **“Unit”**, or **“Listen”**, records the request until a short pause, sends the transcription to a local Ollama model, and speaks the reply using Piper through the system's current audio output.
+A vibe-coded, local, always-listening. It scans the microphone with Whisper, recognizes wake phrases, records the request until a short pause, sends the transcription to a local Ollama model, and speaks the reply using Piper through the system's current audio output.
 
 Whisper.cpp, Piper, Ollama, and the Qwen3.5 model run locally. No API key or cloud connection is needed. The suggested chat model is `qwen3.5:4b` (about 3.3–4.0 GB to download).
 
@@ -60,16 +60,9 @@ From the project directory, create the configuration file:
 cp .env.example .env
 ```
 
-Open `.env` and set the executable paths if `whisper-cli` and `piper` are not on your `PATH`. For the commands above, use:
+Open `.env` and set the executable paths if `whisper-cli` and `piper` are not on your `PATH`.
 
-```dotenv
-OLLAMA_URL=http://127.0.0.1:11434
-OLLAMA_MODEL=qwen3.5:4b
-WHISPER_BIN=whisper.cpp/build/bin/whisper-cli
-WHISPER_MODEL=models/ggml-base.en.bin
-PIPER_BIN=.venv/bin/piper
-PIPER_MODEL=models/en_US-amy-medium.onnx
-```
+Update these environment values to match your system: set the correct executable paths, model file paths, and Ollama URL and model. The application requires all six values. In `src/main.rs`, change the `WAKE_WORDS` constant to the phrases you want the assistant to recognize, and change `FORCED_LANGUAGE` to the Whisper language code that matches your needs.
 
 Build and start the assistant:
 

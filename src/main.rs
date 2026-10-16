@@ -4,7 +4,8 @@ use serde_json::json;
 use std::{env, fs, io::Write, path::{Path, PathBuf}, process::{Command, Stdio}, sync::mpsc, time::{Duration, SystemTime, UNIX_EPOCH}};
 
 const TARGET_RATE: u32 = 16_000;
-const WAKE_WORDS: &[&str] = &["replica unit", "replica", "unit", "listen"];
+const FORCED_LANGUAGE: &str = "en";
+const WAKE_WORDS: &[&str] = &["example"];
 const SILENCE_RMS_THRESHOLD: f32 = 0.012;
 const END_OF_UTTERANCE_SILENCE_MS: usize = 1_800;
 
@@ -24,22 +25,22 @@ struct Config {
     channels: u16,
 }
 
-fn config() -> Config {
-    Config {
-        ollama_url: env::var("OLLAMA_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into()),
-        ollama_model: env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen3.5:4b".into()),
-        whisper_bin: env::var("WHISPER_BIN").unwrap_or_else(|_| "whisper-cli".into()),
-        whisper_model: env::var("WHISPER_MODEL").unwrap_or_else(|_| "models/ggml-base.en.bin".into()).into(),
-        piper_bin: env::var("PIPER_BIN").unwrap_or_else(|_| "piper".into()),
-        piper_model: env::var("PIPER_MODEL").unwrap_or_else(|_| "models/en_US-amy-medium.onnx".into()).into(),
+fn config() -> Result<Config> {
+    Ok(Config {
+        ollama_url: env::var("OLLAMA_URL").context("OLLAMA_URL must be set")?,
+        ollama_model: env::var("OLLAMA_MODEL").context("OLLAMA_MODEL must be set")?,
+        whisper_bin: env::var("WHISPER_BIN").context("WHISPER_BIN must be set")?,
+        whisper_model: env::var("WHISPER_MODEL").context("WHISPER_MODEL must be set")?.into(),
+        piper_bin: env::var("PIPER_BIN").context("PIPER_BIN must be set")?,
+        piper_model: env::var("PIPER_MODEL").context("PIPER_MODEL must be set")?.into(),
         sample_rate: TARGET_RATE,
         channels: 1,
-    }
+    })
 }
 
 fn main() -> Result<()> {
     dotenvy::dotenv().ok();
-    let mut cfg = config();
+    let mut cfg = config()?;
     println!("Replica Unit — English-only; listening for “Replica Unit”, “Replica”, “Unit”, or “Listen”. Ctrl+C exits.");
     check_file(&cfg.whisper_model, "STT", "Whisper model")?;
     check_file(&cfg.piper_model, "TTS", "Piper voice model")?;
@@ -173,7 +174,7 @@ fn send_request(cfg: &Config, text: &str) -> Result<()> {
 fn transcribe(cfg: &Config, audio: &[f32]) -> Result<String> {
     let wav = temp_path("input.wav");
     write_wav(&wav, audio, cfg.sample_rate, cfg.channels)?;
-    let output = Command::new(&cfg.whisper_bin).args(["-m", cfg.whisper_model.to_string_lossy().as_ref(), "-f", wav.to_string_lossy().as_ref(), "-l", "en", "-nt", "-np"]).output()
+    let output = Command::new(&cfg.whisper_bin).args(["-m", cfg.whisper_model.to_string_lossy().as_ref(), "-f", wav.to_string_lossy().as_ref(), "-l", FORCED_LANGUAGE, "-nt", "-np"]).output()
         .with_context(|| format!("Unable to start '{}'. Install whisper.cpp and set WHISPER_BIN.", cfg.whisper_bin))?;
     let _ = fs::remove_file(&wav);
     if !output.status.success() { bail!("whisper.cpp failed: {}", String::from_utf8_lossy(&output.stderr).trim()); }
